@@ -2,16 +2,14 @@ import json
 import time
 import random
 import pandas as pd
-from kafka import KafkaProducer
-
+from confluent_kafka import Producer
 
 # Connect to Kafka and create a producer
-producer = KafkaProducer(
-    bootstrap_servers='localhost:9092',
-    value_serializer=lambda v: json.dumps(v).encode('utf-8')
-)
+producer = Producer({
+    'bootstrap.servers': 'localhost:9092'
+})
 
-# Loads the data and reads boh CSV files into pandas DataFrames
+# Loads the data and reads both CSV files into pandas DataFrames
 print("Loading data...")
 orders = pd.read_csv('data/train/df_Orders.csv')
 payments = pd.read_csv('data/train/df_Payments.csv')
@@ -23,12 +21,12 @@ print(f"Loaded {len(df)} records. Starting to stream...")
 
 # Adding bad records
 # This function randomly corrupts a record to simulate real-world bad data
-# 20% of records will be corrupted 
+# 20% of records will be corrupted
 def corrupt_record(record):
     corruption_type = random.choice([
         'null_order_id',       # missing order ID
         'null_payment',        # missing payment value
-        'negative_payment',    # negative price (impossible)
+        'negative_payment',    # negative price 
         'bad_timestamp',       # malformed date
         'null_customer'        # missing customer ID
     ])
@@ -47,7 +45,6 @@ def corrupt_record(record):
     record['corruption_type'] = corruption_type
     return record
 
-
 # Stream records into Kafka
 for index, row in df.iterrows():
     record = row.where(pd.notna(row), None).to_dict()
@@ -55,18 +52,18 @@ for index, row in df.iterrows():
     # 20% chance this record gets corrupted
     if random.random() < 0.20:
         record = corrupt_record(record)
-        topic = 'orders-raw'  # still goes to raw: consumer will detect it
     else:
         record['corruption_type'] = None  # clean record, no corruption
-        topic = 'orders-raw'
 
-    # The consumer will read from here, validate, and route to clean or DLQ
-    producer.send(topic, value=record)
+    # Send to orders-raw topic
+    producer.produce('orders-raw', value=json.dumps(record).encode('utf-8'))
 
     # Print progress every 100 records
     if index % 100 == 0:
         print(f"Sent {index} records... (last: order_id={record.get('order_id')})")
 
+    # Poll to handle delivery callbacks and avoid buffer overflow
+    producer.poll(0)
 
 # Make sure all messages are actually sent before exiting
 producer.flush()
